@@ -11,6 +11,7 @@ import { InputManager } from '@/core/InputManager';
 import { EventBus } from '@/core/EventBus';
 import { Player } from '@/entities/Player';
 import { Grunt } from '@/entities/enemies/Grunt';
+import { Shooter } from '@/entities/enemies/Shooter';
 import { DebugSystem } from '@/systems/DebugSystem';
 import { EffectsSystem } from '@/systems/EffectsSystem';
 import { HitStopSystem } from '@/systems/HitStopSystem';
@@ -58,10 +59,11 @@ export class GameScene extends Phaser.Scene {
     );
     this.combat.registerEntity(this.player);
 
-    // ---- Musuh ----
-    this.spawnGrunt(centerX + 220, centerY - 60);
-    this.spawnGrunt(centerX + 280, centerY + 80);
-    this.spawnGrunt(centerX - 240, centerY + 40);
+        // ---- Musuh ----
+    this.spawnGrunt(centerX + 240, centerY - 80);
+    this.spawnGrunt(centerX - 200, centerY + 60);
+    this.spawnShooter(centerX + 360, centerY + 140);
+    this.spawnShooter(centerX - 340, centerY - 120);
 
     // ---- Camera ----
     this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
@@ -96,6 +98,11 @@ export class GameScene extends Phaser.Scene {
   private spawnGrunt(x: number, y: number): void {
     const grunt = new Grunt(this, x, y, this.combat, this.player);
     this.trackEnemy(grunt);
+  }
+
+    private spawnShooter(x: number, y: number): void {
+    const shooter = new Shooter(this, x, y, this.combat, this.player);
+    this.trackEnemy(shooter);
   }
 
   private trackEnemy(enemy: Entity): void {

@@ -29,6 +29,7 @@ export abstract class Enemy extends Entity {
   // ---- Tuning. Override di subclass constructor. ----
   protected sightRange = 300;
   protected attackRange = 42;
+  protected minAttackRange = 0;
   protected moveSpeed = 90;
   protected attackWindup = 0.32;
   protected attackActive = 0.08;
@@ -163,27 +164,38 @@ export abstract class Enemy extends Entity {
     }
   }
 
-  private tickChase(dist: number): void {
+    private tickChase(dist: number): void {
     // Player kabur terlalu jauh → kembali idle.
     if (dist > this.sightRange * 1.5) {
       this.aiState = 'idle';
       return;
     }
 
-    // Cukup dekat untuk menyerang.
-    if (dist <= this.attackRange) {
+    // Selalu hadap ke player.
+    const n = normalize(this.player.x - this.x, this.player.y - this.y);
+    this.setRotation(Math.atan2(n.y, n.x));
+
+    // Dalam band serang?
+    if (dist <= this.attackRange && dist >= this.minAttackRange) {
       this.enterWindup();
       return;
     }
 
-    // Bergerak menuju player.
-    const n = normalize(this.player.x - this.x, this.player.y - this.y);
+    // Movement policy dari subclass.
+    const v = this.getChaseVelocity(dist);
     const body = this.body as Phaser.Physics.Arcade.Body;
-    body.velocity.x = n.x * this.moveSpeed;
-    body.velocity.y = n.y * this.moveSpeed;
+    body.velocity.x = v.x;
+    body.velocity.y = v.y;
+  }
 
-    // Hadap ke player.
-    this.setRotation(Math.atan2(n.y, n.x));
+  /**
+   * Default: kejar player langsung.
+   * Subclass (Shooter) override untuk kustomisasi.
+   */
+  protected getChaseVelocity(dist: number): { x: number; y: number } {
+    void dist;
+    const n = normalize(this.player.x - this.x, this.player.y - this.y);
+    return { x: n.x * this.moveSpeed, y: n.y * this.moveSpeed };
   }
 
   private enterWindup(): void {
