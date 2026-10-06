@@ -4,11 +4,15 @@ import { SceneManager } from '@/core/SceneManager';
 import { InputManager } from '@/core/InputManager';
 import { Player } from '@/entities/Player';
 import { DebugSystem } from '@/systems/DebugSystem';
+import { EffectsSystem } from '@/systems/EffectsSystem';
+import { HitStopSystem } from '@/systems/HitStopSystem';
 
 export class GameScene extends Phaser.Scene {
   private inputManager!: InputManager;
   private player!: Player;
   private debug!: DebugSystem;
+  private effects!: EffectsSystem;
+  private hitstop!: HitStopSystem;
 
   constructor() {
     super({ key: SCENE_KEYS.GAME });
@@ -20,14 +24,17 @@ export class GameScene extends Phaser.Scene {
     this.createGrid();
     this.createWorldBounds();
 
+    // Urutan penting:
+    // 1. EffectsSystem — siap mendengarkan event sebelum Player emit.
+    // 2. InputManager — Player butuh ini.
+    // 3. HitStopSystem — siap menerima request dari mana saja.
+    this.effects = new EffectsSystem(this);
+    this.hitstop = new HitStopSystem();
     this.inputManager = new InputManager(this);
 
     const { centerX, centerY } = this.cameras.main;
     this.player = new Player(this, centerX, centerY, this.inputManager);
 
-    // Kamera mengikuti player.
-    // - lerp 0.08: sedikit lag supaya terasa natural
-    // - deadzone 140x100: player boleh bergerak sedikit tanpa kamera ikut
     this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
     this.cameras.main.setDeadzone(140, 100);
     this.cameras.main.setZoom(1.5);
@@ -35,8 +42,19 @@ export class GameScene extends Phaser.Scene {
     this.debug = new DebugSystem(this);
 
     this.createHud();
+
+    // Luncurkan UIScene dengan reference ke scene ini.
+    this.scene.launch(SCENE_KEYS.UI, { gameScene: this });
+
     this.setupInput();
     this.setupCleanup();
+  }
+
+  /**
+   * Getter publik supaya UIScene bisa baca state player.
+   */
+  getPlayer(): Player {
+    return this.player;
   }
 
   private createGrid(): void {
@@ -58,23 +76,23 @@ export class GameScene extends Phaser.Scene {
   }
 
   private createHud(): void {
+    // HUD statis di scene (bukan UIScene) — teks kontrol.
     this.add
       .text(
         16,
-        16,
+        100,
         [
-          'GameScene — Tahap 1C-2',
-          'WASD / Arrow : gerak',
-          'Shift        : sprint',
-          'Ctrl / RMB   : dash',
-          'F1           : debug',
-          'ESC          : menu',
+          'WASD/Arrow : gerak',
+          'Shift      : sprint',
+          'Ctrl / RMB : dash',
+          'F1         : debug',
+          'ESC        : menu',
         ].join('\n'),
         {
           fontFamily: 'monospace',
-          fontSize: '13px',
-          color: '#6ee7ff',
-          lineSpacing: 4,
+          fontSize: '12px',
+          color: '#505068',
+          lineSpacing: 3,
         }
       )
       .setScrollFactor(0)
@@ -91,6 +109,9 @@ export class GameScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.inputManager.destroy();
       this.debug.destroy();
+      this.effects.destroy();
+      this.hitstop.destroy();
+
       if (this.scene.isActive(SCENE_KEYS.UI)) {
         this.scene.stop(SCENE_KEYS.UI);
       }
@@ -98,12 +119,19 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
+    // Input selalu di-update, bahkan saat hitstop, supaya buffer input
+    // tetap responsif saat freeze selesai.
     this.inputManager.update();
 
-    if (!this.player.isDead) {
+    this.hitstop.update(delta);
+
+    // Saat hitstop aktif, entity tidak update. Efek visual tetap jalan
+    // supaya tidak terasa "rusak".
+    if (!this.hitstop.isFrozen && !this.player.isDead) {
       this.player.updateEntity(delta);
     }
 
+    this.effects.update(delta);
     this.debug.update(this.player);
   }
 }

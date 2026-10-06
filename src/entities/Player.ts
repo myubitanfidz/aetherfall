@@ -2,7 +2,8 @@ import Phaser from 'phaser';
 import { Entity } from './Entity';
 import { InputManager } from '@/core/InputManager';
 import { damp, normalize } from '@/utils/math';
-import { DEPTHS } from '@/config/constants';
+import { DEPTHS, EVENTS } from '@/config/constants';
+import { EventBus } from '@/core/EventBus';
 
 // ---- Movement tuning ----
 const MAX_SPEED = 220;
@@ -12,9 +13,13 @@ const DECELERATION = 22;
 
 // ---- Dash tuning ----
 const DASH_SPEED = 720;
-const DASH_DURATION = 0.18;      // detik
-const DASH_COOLDOWN = 0.55;      // detik
-const IFRAME_DURATION = 0.22;    // detik, sedikit lebih lama dari dash
+const DASH_DURATION = 0.18;
+const DASH_COOLDOWN = 0.55;
+const IFRAME_DURATION = 0.22;
+
+// ---- Dust trigger ----
+const STOP_SPEED_THRESHOLD = 40;    // px/s — di bawah ini dianggap diam
+const STOP_DUST_COOLDOWN = 0.35;    // detik, biar tidak spam saat berhenti-gerak cepat
 
 export class Player extends Entity {
   private inputManager: InputManager;
@@ -22,12 +27,16 @@ export class Player extends Entity {
   public facingX = 1;
   public facingY = 0;
 
-  // State dash
+  // Dash state
   private dashRemaining = 0;
   private dashCooldown = 0;
   private iFrameRemaining = 0;
   private dashDirX = 1;
   private dashDirY = 0;
+
+  // Stop-detection state
+  private prevSpeed = 0;
+  private stopCooldown = 0;
 
   // Visual
   private shadow!: Phaser.GameObjects.Ellipse;
@@ -42,11 +51,9 @@ export class Player extends Entity {
 
     this.setDepth(DEPTHS.ENTITY);
 
-    // Shadow: ellipse hitam transparan di bawah player.
     this.shadow = scene.add.ellipse(x, y + 10, 26, 12, 0x000000, 0.35);
     this.shadow.setDepth(DEPTHS.DECAL);
 
-    // Bersihkan shadow saat player hancur.
     this.once(Phaser.GameObjects.Events.DESTROY, () => {
       this.shadow.destroy();
     });
@@ -60,6 +67,11 @@ export class Player extends Entity {
     return this.dashRemaining > 0;
   }
 
+  /** 0..1, siap = 1, baru dipakai = 0. Untuk HUD. */
+  get dashReadiness(): number {
+    return 1 - this.dashCooldown / DASH_COOLDOWN;
+  }
+
   updateEntity(delta: number): void {
     if (this.isDead) return;
 
@@ -70,52 +82,76 @@ export class Player extends Entity {
     // ---- Timers ----
     this.dashCooldown = Math.max(0, this.dashCooldown - dt);
     this.iFrameRemaining = Math.max(0, this.iFrameRemaining - dt);
+    this.stopCooldown = Math.max(0, this.stopCooldown - dt);
 
-    // ---- Update facing sebelum dash (dipakai kalau diam) ----
+    // ---- Facing direction (dipakai untuk dash tanpa input) ----
+    this.updateFacing();
+
+    // ---- Pilih mode: dash, mulai dash, atau gerak normal ----
+    if (this.dashRemaining > 0) {
+      this.tickDash(dt, body);
+    } else if (s.dashPressed && this.dashCooldown <= 0) {
+      this.startDash();
+      this.tickDash(dt, body);
+    } else {
+      this.tickNormalMovement(dt, body);
+    }
+
+    // ---- Deteksi berhenti mendadak ----
+    this.checkStopEvent(dt, body);
+
+    // ---- Visual sinkron ----
+    this.postUpdate();
+  }
+
+  private updateFacing(): void {
+    const s = this.inputManager.state;
+
     if (s.moveX !== 0 || s.moveY !== 0) {
       const n = normalize(s.moveX, s.moveY);
       this.facingX = n.x;
       this.facingY = n.y;
-    } else {
-      const dx = s.aimWorldX - this.x;
-      const dy = s.aimWorldY - this.y;
-      const n = normalize(dx, dy);
-      if (n.x !== 0 || n.y !== 0) {
-        this.facingX = n.x;
-        this.facingY = n.y;
-      }
-    }
-
-    // ---- Dash logic ----
-    if (this.dashRemaining > 0) {
-      this.dashRemaining -= dt;
-      body.velocity.x = this.dashDirX * DASH_SPEED;
-      body.velocity.y = this.dashDirY * DASH_SPEED;
-
-      // Visual: sedikit memudar saat dash.
-      this.setAlpha(0.75);
-
-      if (this.dashRemaining <= 0) {
-        // Momentum: pertahankan sedikit kecepatan ke arah dash.
-        body.velocity.x = this.dashDirX * MAX_SPEED;
-        body.velocity.y = this.dashDirY * MAX_SPEED;
-        this.setAlpha(1);
-      }
-
-      this.postUpdate();
       return;
     }
 
-    // Trigger dash baru.
-    if (s.dashPressed && this.dashCooldown <= 0) {
-      this.startDash();
-      this.postUpdate();
-      return;
+    const dx = s.aimWorldX - this.x;
+    const dy = s.aimWorldY - this.y;
+    const n = normalize(dx, dy);
+    if (n.x !== 0 || n.y !== 0) {
+      this.facingX = n.x;
+      this.facingY = n.y;
     }
+  }
 
-    // ---- Normal movement ----
+  private tickDash(dt: number, body: Phaser.Physics.Arcade.Body): void {
+    this.dashRemaining -= dt;
+
+    body.velocity.x = this.dashDirX * DASH_SPEED;
+    body.velocity.y = this.dashDirY * DASH_SPEED;
+
+    this.setAlpha(0.75);
+
+    // Trail: minta EffectsSystem memancarkan partikel di posisi ini.
+    EventBus.emit(EVENTS.PLAYER_DASH_TICK, {
+      x: this.x,
+      y: this.y,
+      dirX: this.dashDirX,
+      dirY: this.dashDirY,
+    });
+
+    if (this.dashRemaining <= 0) {
+      // Keluar dari dash dengan sedikit momentum.
+      body.velocity.x = this.dashDirX * MAX_SPEED;
+      body.velocity.y = this.dashDirY * MAX_SPEED;
+      this.setAlpha(1);
+    }
+  }
+
+  private tickNormalMovement(dt: number, body: Phaser.Physics.Arcade.Body): void {
+    const s = this.inputManager.state;
     const sprinting = s.sprintHeld;
     const targetSpeed = sprinting ? MAX_SPEED * SPRINT_MULTIPLIER : MAX_SPEED;
+
     const targetVX = s.moveX * targetSpeed;
     const targetVY = s.moveY * targetSpeed;
 
@@ -125,14 +161,10 @@ export class Player extends Entity {
     body.velocity.x = damp(body.velocity.x, targetVX, smoothing, dt);
     body.velocity.y = damp(body.velocity.y, targetVY, smoothing, dt);
 
-    // Reset alpha kalau sebelumnya dash.
     if (this.alpha !== 1) this.setAlpha(1);
-
-    this.postUpdate();
   }
 
   private startDash(): void {
-    // Arah dash: input arah kalau ada, else pakai facing.
     const s = this.inputManager.state;
     let dx = s.moveX;
     let dy = s.moveY;
@@ -149,12 +181,35 @@ export class Player extends Entity {
     this.dashRemaining = DASH_DURATION;
     this.dashCooldown = DASH_COOLDOWN;
     this.iFrameRemaining = IFRAME_DURATION;
+
+    EventBus.emit(EVENTS.PLAYER_DASH_STARTED, {
+      x: this.x,
+      y: this.y,
+      dirX: this.dashDirX,
+      dirY: this.dashDirY,
+    });
   }
 
   /**
-   * Update hal-hal visual yang selalu perlu tiap frame.
-   * Dipisah supaya tidak lupa dipanggil di semua cabang return.
+   * Kalau sebelumnya bergerak cepat, lalu tiba-tiba pelan → dust burst.
+   * Cooldown mencegah spam saat pemain zig-zag cepat.
    */
+  private checkStopEvent(dt: number, body: Phaser.Physics.Arcade.Body): void {
+    const speed = body.speed;
+
+    if (
+      this.prevSpeed > STOP_SPEED_THRESHOLD &&
+      speed < STOP_SPEED_THRESHOLD &&
+      this.stopCooldown <= 0
+    ) {
+      EventBus.emit(EVENTS.PLAYER_STOPPED, { x: this.x, y: this.y });
+      this.stopCooldown = STOP_DUST_COOLDOWN;
+    }
+
+    this.prevSpeed = speed;
+    void dt;
+  }
+
   private postUpdate(): void {
     this.shadow.setPosition(this.x, this.y + 10);
     this.setRotation(Math.atan2(this.facingY, this.facingX));

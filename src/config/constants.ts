@@ -21,10 +21,19 @@ export const DEPTHS = {
 } as const;
 
 export const EVENTS = {
+  // Combat & gameplay
   PLAYER_DAMAGED: 'player:damaged',
   ENEMY_KILLED: 'enemy:killed',
   LOOT_DROPPED: 'loot:dropped',
   SCENE_CHANGED: 'scene:changed',
+
+  // Player movement (dipakai EffectsSystem)
+  PLAYER_DASH_STARTED: 'player:dash-started',
+  PLAYER_DASH_TICK: 'player:dash-tick',
+  PLAYER_STOPPED: 'player:stopped',
+
+  // Sistem global
+  HITSTOP_REQUEST: 'hitstop:request',
 } as const;
 
 export const COLORS = {
@@ -32,4 +41,8 @@ export const COLORS = {
   PRIMARY: 0x6ee7ff,
   DANGER: 0xff4d6d,
   GOLD: 0xffd166,
+  SUCCESS: 0x4ade80,
+  PANEL_BG: 0x1a1a2e,
+  PANEL_BORDER: 0x252540,
+  MUTED: 0x505068,
 } as const;
