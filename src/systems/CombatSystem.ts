@@ -1,7 +1,6 @@
 import Phaser from 'phaser';
 import { Hitbox } from '@/entities/Hitbox';
 import { Entity } from '@/entities/Entity';
-import { DEPTHS } from '@/config/constants';
 import type { CircleHitboxOptions, DamageInfo } from '@/types/combat';
 
 /**
