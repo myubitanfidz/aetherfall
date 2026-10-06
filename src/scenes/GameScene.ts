@@ -1,10 +1,16 @@
 import Phaser from 'phaser';
-import { SCENE_KEYS, DEPTHS, COLORS, TILE_SIZE, EVENTS } from '@/config/constants';
+import {
+  SCENE_KEYS,
+  DEPTHS,
+  COLORS,
+  TILE_SIZE,
+  EVENTS,
+} from '@/config/constants';
 import { SceneManager } from '@/core/SceneManager';
 import { InputManager } from '@/core/InputManager';
 import { EventBus } from '@/core/EventBus';
 import { Player } from '@/entities/Player';
-import { DummyEnemy } from '@/entities/DummyEnemy';
+import { Grunt } from '@/entities/enemies/Grunt';
 import { DebugSystem } from '@/systems/DebugSystem';
 import { EffectsSystem } from '@/systems/EffectsSystem';
 import { HitStopSystem } from '@/systems/HitStopSystem';
@@ -43,13 +49,19 @@ export class GameScene extends Phaser.Scene {
 
     // ---- Player ----
     const { centerX, centerY } = this.cameras.main;
-    this.player = new Player(this, centerX, centerY, this.inputManager, this.combat);
+    this.player = new Player(
+      this,
+      centerX,
+      centerY,
+      this.inputManager,
+      this.combat
+    );
     this.combat.registerEntity(this.player);
 
-    // ---- Dummy targets ----
-    this.spawnDummy(centerX + 120, centerY - 40);
-    this.spawnDummy(centerX + 160, centerY + 60);
-    this.spawnDummy(centerX - 140, centerY + 40);
+    // ---- Musuh ----
+    this.spawnGrunt(centerX + 220, centerY - 60);
+    this.spawnGrunt(centerX + 280, centerY + 80);
+    this.spawnGrunt(centerX - 240, centerY + 40);
 
     // ---- Camera ----
     this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
@@ -59,10 +71,10 @@ export class GameScene extends Phaser.Scene {
     // ---- Debug ----
     this.debug = new DebugSystem(this);
 
-    // ---- HUD statis ----
+    // ---- HUD ----
     this.createHud();
 
-    // ---- Event listeners ----
+    // ---- Events ----
     this.setupCombatEvents();
 
     // ---- UIScene ----
@@ -73,29 +85,32 @@ export class GameScene extends Phaser.Scene {
     this.setupCleanup();
   }
 
-  // ============================================================
-  // PUBLIC API (untuk UIScene)
-  // ============================================================
-
   getPlayer(): Player {
     return this.player;
   }
 
   // ============================================================
-  // SETUP
+  // SPAWN
   // ============================================================
 
-  private spawnDummy(x: number, y: number): void {
-    const dummy = new DummyEnemy(this, x, y);
-    this.combat.registerEntity(dummy);
-    this.enemies.push(dummy);
+  private spawnGrunt(x: number, y: number): void {
+    const grunt = new Grunt(this, x, y, this.combat, this.player);
+    this.trackEnemy(grunt);
+  }
 
-    // Bersihkan dari list saat mati.
-    dummy.once(Phaser.GameObjects.Events.DESTROY, () => {
-      const idx = this.enemies.indexOf(dummy);
+  private trackEnemy(enemy: Entity): void {
+    this.combat.registerEntity(enemy);
+    this.enemies.push(enemy);
+
+    enemy.once(Phaser.GameObjects.Events.DESTROY, () => {
+      const idx = this.enemies.indexOf(enemy);
       if (idx >= 0) this.enemies.splice(idx, 1);
     });
   }
+
+  // ============================================================
+  // SETUP
+  // ============================================================
 
   private createGrid(): void {
     const g = this.add.graphics();
@@ -141,7 +156,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupCombatEvents(): void {
-    // Setiap damage → spawn damage number + hitstop request.
     EventBus.on(
       EVENTS.ENTITY_DAMAGED,
       (payload: { entity: Entity; amount: number; info: DamageInfo }) => {
@@ -160,8 +174,6 @@ export class GameScene extends Phaser.Scene {
     );
 
     EventBus.on(EVENTS.ENTITY_DIED, (payload: { entity: Entity }) => {
-      // Nanti: drop loot, tambah skor, dsb.
-      // Untuk sekarang, cukup lewat.
       void payload;
     });
   }
@@ -208,16 +220,15 @@ export class GameScene extends Phaser.Scene {
 
     if (!this.hitstop.isFrozen && !this.player.isDead) {
       this.player.updateEntity(delta);
+    }
+
+    if (!this.hitstop.isFrozen) {
       for (const e of this.enemies) {
         e.updateEntity(delta);
       }
     }
 
-    // CombatSystem tetap update walaupun hitstop — supaya hitbox
-    // yang aktif tetap konsisten dengan life-cycle-nya.
-    // (Kalau mau hitbox juga freeze, ganti jadi di dalam if di atas.)
     this.combat.update(delta);
-
     this.effects.update(delta);
     this.debug.update(this.player);
   }
