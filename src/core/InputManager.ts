@@ -1,41 +1,28 @@
 import Phaser from 'phaser';
 
-/**
- * State input yang dibaca oleh gameplay tiap frame.
- * Semua sistem lain hanya butuh interface ini, bukan detail device.
- */
 export interface InputState {
-  // Arah gerak, sudah dinormalisasi. Panjang 0..1.
   moveX: number;
   moveY: number;
 
-  // Posisi aim di world coordinate (hasil dari mouse/touch kanan).
   aimWorldX: number;
   aimWorldY: number;
-
-  // Arah aim sebagai vektor satuan.
   aimX: number;
   aimY: number;
 
-  // Action edge-triggered (true hanya di frame saat tombol ditekan).
+  // Edge-triggered: true hanya di frame tombol ditekan.
   attackPressed: boolean;
   dashPressed: boolean;
 
-  // Action held (true selama tombol ditahan).
+  // Held: true selama tombol ditahan.
   attackHeld: boolean;
   dashHeld: boolean;
+  sprintHeld: boolean;
 }
 
-/**
- * InputManager mengelola semua device input dan mengekspos state
- * yang seragam. Nanti mobile tinggal menambahkan virtual joystick
- * tanpa mengubah Player.
- */
 export class InputManager {
   private scene: Phaser.Scene;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
 
-  // State yang dipublikasikan.
   public state: InputState = {
     moveX: 0,
     moveY: 0,
@@ -47,9 +34,9 @@ export class InputManager {
     dashPressed: false,
     attackHeld: false,
     dashHeld: false,
+    sprintHeld: false,
   };
 
-  // Flag internal untuk edge detection.
   private attackWasDown = false;
   private dashWasDown = false;
 
@@ -74,34 +61,20 @@ export class InputManager {
         leftArrow: Phaser.Input.Keyboard.KeyCodes.LEFT,
         rightArrow: Phaser.Input.Keyboard.KeyCodes.RIGHT,
         attack: Phaser.Input.Keyboard.KeyCodes.SPACE,
-        dash: Phaser.Input.Keyboard.KeyCodes.SHIFT,
+        dash: Phaser.Input.Keyboard.KeyCodes.CTRL,
+        sprint: Phaser.Input.Keyboard.KeyCodes.SHIFT,
       }
     ) as Record<string, Phaser.Input.Keyboard.Key>;
   }
 
   private setupMouse(): void {
-    // Update aim tiap gerakan mouse.
-    this.scene.input.on(Phaser.Input.Events.POINTER_MOVE, (pointer: Phaser.Input.Pointer) => {
-      this.state.aimWorldX = pointer.worldX;
-      this.state.aimWorldY = pointer.worldY;
-    });
-
-    // Klik kiri = attack.
-    this.scene.input.on(Phaser.Input.Events.POINTER_DOWN, (pointer: Phaser.Input.Pointer) => {
-      if (pointer.leftButtonDown()) {
-        this.attackWasDown = true;
-      }
-      if (pointer.rightButtonDown()) {
-        this.dashWasDown = true;
-      }
-    });
+    // Cegah menu context browser muncul saat klik kanan.
+    this.scene.input.mouse?.disableContextMenu();
   }
 
-  /**
-   * Dipanggil setiap frame oleh GameScene sebelum update entity.
-   */
   update(): void {
     const s = this.state;
+    const pointer = this.scene.input.activePointer;
 
     // ---- Movement (8 arah) ----
     let mx = 0;
@@ -119,7 +92,6 @@ export class InputManager {
       if (down) my += 1;
     }
 
-    // Normalisasi supaya diagonal tidak lebih cepat.
     const len = Math.sqrt(mx * mx + my * my);
     if (len > 1) {
       mx /= len;
@@ -128,40 +100,25 @@ export class InputManager {
     s.moveX = mx;
     s.moveY = my;
 
-    // ---- Aim direction ----
-    const player = this.scene.cameras.main.getWorldPoint(
-      this.scene.input.activePointer.x,
-      this.scene.input.activePointer.y
-    );
-    s.aimWorldX = player.x;
-    s.aimWorldY = player.y;
+    // ---- Aim (selalu update tiap frame) ----
+    const world = this.scene.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    s.aimWorldX = world.x;
+    s.aimWorldY = world.y;
 
-    // ---- Action held ----
-    const attackDown =
-      this.keys?.attack.isDown === true || this.scene.input.activePointer.leftButtonDown();
-    const dashDown =
-      this.keys?.dash.isDown === true || this.scene.input.activePointer.rightButtonDown();
+    // ---- Actions ----
+    const attackDown = this.keys?.attack.isDown === true || pointer.leftButtonDown();
+    const dashDown = this.keys?.dash.isDown === true || pointer.rightButtonDown();
+    const sprintDown = this.keys?.sprint.isDown === true;
 
     s.attackHeld = attackDown;
     s.dashHeld = dashDown;
+    s.sprintHeld = sprintDown;
 
-    // ---- Edge detection ----
     s.attackPressed = attackDown && !this.attackWasDown;
     s.dashPressed = dashDown && !this.dashWasDown;
 
     this.attackWasDown = attackDown;
     this.dashWasDown = dashDown;
-  }
-
-  /**
-   * Set arah aim dari vektor (dipakai mobile/touch atau AI nanti).
-   * Sengaja terpisah supaya gameplay tidak peduli sumbernya.
-   */
-  setAimVector(x: number, y: number): void {
-    const len = Math.sqrt(x * x + y * y);
-    if (len < 1e-6) return;
-    this.state.aimX = x / len;
-    this.state.aimY = y / len;
   }
 
   destroy(): void {

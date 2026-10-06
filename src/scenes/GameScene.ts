@@ -20,15 +20,16 @@ export class GameScene extends Phaser.Scene {
     this.createGrid();
     this.createWorldBounds();
 
-    // Input harus dibuat sebelum Player.
     this.inputManager = new InputManager(this);
 
-    // Spawn player di tengah dunia.
     const { centerX, centerY } = this.cameras.main;
     this.player = new Player(this, centerX, centerY, this.inputManager);
 
     // Kamera mengikuti player.
-    this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+    // - lerp 0.08: sedikit lag supaya terasa natural
+    // - deadzone 140x100: player boleh bergerak sedikit tanpa kamera ikut
+    this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
+    this.cameras.main.setDeadzone(140, 100);
     this.cameras.main.setZoom(1.5);
 
     this.debug = new DebugSystem(this);
@@ -39,7 +40,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   private createGrid(): void {
-    // Grid besar (2000x2000) supaya terasa ada ruang.
     const g = this.add.graphics();
     g.lineStyle(1, 0x1a1a2e, 1);
     g.setDepth(DEPTHS.GROUND);
@@ -54,18 +54,29 @@ export class GameScene extends Phaser.Scene {
   }
 
   private createWorldBounds(): void {
-    // Batas dunia 2000x2000 dari -1000 sampai 1000.
     this.physics.world.setBounds(-1000, -1000, 2000, 2000);
   }
 
   private createHud(): void {
     this.add
-      .text(16, 16, 'GameScene — Tahap 1C\nWASD / Arrow: gerak\nF1: debug\nESC: menu', {
-        fontFamily: 'monospace',
-        fontSize: '13px',
-        color: '#6ee7ff',
-        lineSpacing: 4,
-      })
+      .text(
+        16,
+        16,
+        [
+          'GameScene — Tahap 1C-2',
+          'WASD / Arrow : gerak',
+          'Shift        : sprint',
+          'Ctrl / RMB   : dash',
+          'F1           : debug',
+          'ESC          : menu',
+        ].join('\n'),
+        {
+          fontFamily: 'monospace',
+          fontSize: '13px',
+          color: '#6ee7ff',
+          lineSpacing: 4,
+        }
+      )
       .setScrollFactor(0)
       .setDepth(DEPTHS.UI);
   }
