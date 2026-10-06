@@ -4,25 +4,41 @@ import { InputManager } from '@/core/InputManager';
 import { damp, normalize } from '@/utils/math';
 import { DEPTHS, EVENTS } from '@/config/constants';
 import { EventBus } from '@/core/EventBus';
+import type { CombatSystem } from '@/systems/CombatSystem';
 
-// ---- Movement tuning ----
+// ---- Movement ----
 const MAX_SPEED = 220;
 const SPRINT_MULTIPLIER = 1.5;
 const ACCELERATION = 18;
 const DECELERATION = 22;
 
-// ---- Dash tuning ----
+// ---- Dash ----
 const DASH_SPEED = 720;
 const DASH_DURATION = 0.18;
 const DASH_COOLDOWN = 0.55;
 const IFRAME_DURATION = 0.22;
 
-// ---- Dust trigger ----
-const STOP_SPEED_THRESHOLD = 40;    // px/s — di bawah ini dianggap diam
-const STOP_DUST_COOLDOWN = 0.35;    // detik, biar tidak spam saat berhenti-gerak cepat
+// ---- Attack ----
+const ATTACK_COOLDOWN = 0.35;      // detik, dari awal hingga bisa attack lagi
+const ATTACK_WINDUP = 0.06;        // detik sebelum hitbox muncul
+const ATTACK_ACTIVE = 0.10;        // detik hitbox aktif
+const ATTACK_RECOVER = 0.14;       // detik setelah hitbox hilang sebelum bisa gerak penuh
+const ATTACK_MOVE_MULT = 0.35;     // movement diperlambat saat attack
+const ATTACK_RANGE = 34;           // px, jarak dari pusat player ke pusat hitbox
+const ATTACK_RADIUS = 26;          // px, radius hitbox
+const ATTACK_DAMAGE = 12;
+const ATTACK_KNOCKBACK = 180;
+const ATTACK_HITSTOP = 55;
+
+// ---- Stop dust ----
+const STOP_SPEED_THRESHOLD = 40;
+const STOP_DUST_COOLDOWN = 0.35;
+
+type AttackPhase = 'idle' | 'windup' | 'active' | 'recover';
 
 export class Player extends Entity {
   private inputManager: InputManager;
+  private combat: CombatSystem;
 
   public facingX = 1;
   public facingY = 0;
@@ -30,20 +46,31 @@ export class Player extends Entity {
   // Dash state
   private dashRemaining = 0;
   private dashCooldown = 0;
-  private iFrameRemaining = 0;
   private dashDirX = 1;
   private dashDirY = 0;
 
-  // Stop-detection state
+  // Attack state
+  private attackPhase: AttackPhase = 'idle';
+  private attackTimer = 0;
+  private attackCooldown = 0;
+
+  // Stop dust
   private prevSpeed = 0;
   private stopCooldown = 0;
 
   // Visual
   private shadow!: Phaser.GameObjects.Ellipse;
 
-  constructor(scene: Phaser.Scene, x: number, y: number, input: InputManager) {
-    super(scene, x, y, 'player', 100);
+  constructor(
+    scene: Phaser.Scene,
+    x: number,
+    y: number,
+    input: InputManager,
+    combat: CombatSystem
+  ) {
+    super(scene, x, y, 'player', 100, 'player');
     this.inputManager = input;
+    this.combat = combat;
 
     const body = this.body as Phaser.Physics.Arcade.Body;
     body.setSize(24, 24);
@@ -59,15 +86,14 @@ export class Player extends Entity {
     });
   }
 
-  get isInvulnerable(): boolean {
-    return this.iFrameRemaining > 0;
-  }
-
   get isDashing(): boolean {
     return this.dashRemaining > 0;
   }
 
-  /** 0..1, siap = 1, baru dipakai = 0. Untuk HUD. */
+  get isAttacking(): boolean {
+    return this.attackPhase !== 'idle';
+  }
+
   get dashReadiness(): number {
     return 1 - this.dashCooldown / DASH_COOLDOWN;
   }
@@ -79,30 +105,44 @@ export class Player extends Entity {
     const s = this.inputManager.state;
     const body = this.body as Phaser.Physics.Arcade.Body;
 
-    // ---- Timers ----
+    // ---- Timers dasar ----
     this.dashCooldown = Math.max(0, this.dashCooldown - dt);
-    this.iFrameRemaining = Math.max(0, this.iFrameRemaining - dt);
+    this.attackCooldown = Math.max(0, this.attackCooldown - dt);
     this.stopCooldown = Math.max(0, this.stopCooldown - dt);
 
-    // ---- Facing direction (dipakai untuk dash tanpa input) ----
+    // ---- tickTimers mengurus i-frame & knockback ----
+    const canMove = this.tickTimers(delta);
+
+    // ---- Facing direction ----
     this.updateFacing();
 
-    // ---- Pilih mode: dash, mulai dash, atau gerak normal ----
+    // ---- Attack state machine (prioritas setelah dash) ----
+    this.tickAttack(dt);
+
+    // ---- Dash ----
     if (this.dashRemaining > 0) {
       this.tickDash(dt, body);
-    } else if (s.dashPressed && this.dashCooldown <= 0) {
+    } else if (s.dashPressed && this.dashCooldown <= 0 && !this.isAttacking) {
       this.startDash();
       this.tickDash(dt, body);
+    } else if (canMove) {
+      this.tickMovement(dt, body);
     } else {
-      this.tickNormalMovement(dt, body);
+      // Knockback — kurangi velocity pelan-pelan supaya tidak sliding.
+      body.velocity.x *= 0.9;
+      body.velocity.y *= 0.9;
     }
 
-    // ---- Deteksi berhenti mendadak ----
-    this.checkStopEvent(dt, body);
+    // ---- Stop dust ----
+    this.checkStopEvent(body);
 
-    // ---- Visual sinkron ----
+    // ---- Visual ----
     this.postUpdate();
   }
+
+  // ============================================================
+  // FACING
+  // ============================================================
 
   private updateFacing(): void {
     const s = this.inputManager.state;
@@ -123,34 +163,15 @@ export class Player extends Entity {
     }
   }
 
-  private tickDash(dt: number, body: Phaser.Physics.Arcade.Body): void {
-    this.dashRemaining -= dt;
+  // ============================================================
+  // MOVEMENT
+  // ============================================================
 
-    body.velocity.x = this.dashDirX * DASH_SPEED;
-    body.velocity.y = this.dashDirY * DASH_SPEED;
-
-    this.setAlpha(0.75);
-
-    // Trail: minta EffectsSystem memancarkan partikel di posisi ini.
-    EventBus.emit(EVENTS.PLAYER_DASH_TICK, {
-      x: this.x,
-      y: this.y,
-      dirX: this.dashDirX,
-      dirY: this.dashDirY,
-    });
-
-    if (this.dashRemaining <= 0) {
-      // Keluar dari dash dengan sedikit momentum.
-      body.velocity.x = this.dashDirX * MAX_SPEED;
-      body.velocity.y = this.dashDirY * MAX_SPEED;
-      this.setAlpha(1);
-    }
-  }
-
-  private tickNormalMovement(dt: number, body: Phaser.Physics.Arcade.Body): void {
+  private tickMovement(dt: number, body: Phaser.Physics.Arcade.Body): void {
     const s = this.inputManager.state;
-    const sprinting = s.sprintHeld;
-    const targetSpeed = sprinting ? MAX_SPEED * SPRINT_MULTIPLIER : MAX_SPEED;
+    const sprinting = s.sprintHeld && !this.isAttacking;
+    const baseSpeed = sprinting ? MAX_SPEED * SPRINT_MULTIPLIER : MAX_SPEED;
+    const targetSpeed = this.isAttacking ? baseSpeed * ATTACK_MOVE_MULT : baseSpeed;
 
     const targetVX = s.moveX * targetSpeed;
     const targetVY = s.moveY * targetSpeed;
@@ -162,6 +183,28 @@ export class Player extends Entity {
     body.velocity.y = damp(body.velocity.y, targetVY, smoothing, dt);
 
     if (this.alpha !== 1) this.setAlpha(1);
+  }
+
+  private tickDash(dt: number, body: Phaser.Physics.Arcade.Body): void {
+    this.dashRemaining -= dt;
+
+    body.velocity.x = this.dashDirX * DASH_SPEED;
+    body.velocity.y = this.dashDirY * DASH_SPEED;
+
+    this.setAlpha(0.75);
+
+    EventBus.emit(EVENTS.PLAYER_DASH_TICK, {
+      x: this.x,
+      y: this.y,
+      dirX: this.dashDirX,
+      dirY: this.dashDirY,
+    });
+
+    if (this.dashRemaining <= 0) {
+      body.velocity.x = this.dashDirX * MAX_SPEED;
+      body.velocity.y = this.dashDirY * MAX_SPEED;
+      this.setAlpha(1);
+    }
   }
 
   private startDash(): void {
@@ -180,7 +223,7 @@ export class Player extends Entity {
 
     this.dashRemaining = DASH_DURATION;
     this.dashCooldown = DASH_COOLDOWN;
-    this.iFrameRemaining = IFRAME_DURATION;
+    this.iFrameMs = IFRAME_DURATION * 1000;
 
     EventBus.emit(EVENTS.PLAYER_DASH_STARTED, {
       x: this.x,
@@ -190,11 +233,82 @@ export class Player extends Entity {
     });
   }
 
+  // ============================================================
+  // ATTACK
+  // ============================================================
+
+  private tickAttack(dt: number): void {
+    const s = this.inputManager.state;
+
+    // Bisa mulai attack baru hanya kalau:
+    // - sedang idle (bukan attacking, bukan dashing)
+    // - cooldown sudah 0
+    // - tombol attack ditekan (edge)
+    if (
+      this.attackPhase === 'idle' &&
+      this.attackCooldown <= 0 &&
+      !this.isDashing &&
+      s.attackPressed
+    ) {
+      this.attackPhase = 'windup';
+      this.attackTimer = ATTACK_WINDUP;
+      this.attackCooldown = ATTACK_COOLDOWN;
+    }
+
+    if (this.attackPhase === 'idle') return;
+
+    this.attackTimer -= dt;
+
+    if (this.attackTimer > 0) return;
+
+    // Transisi fase.
+    if (this.attackPhase === 'windup') {
+      this.attackPhase = 'active';
+      this.attackTimer = ATTACK_ACTIVE;
+      this.spawnAttackHitbox();
+    } else if (this.attackPhase === 'active') {
+      this.attackPhase = 'recover';
+      this.attackTimer = ATTACK_RECOVER;
+    } else {
+      this.attackPhase = 'idle';
+      this.attackTimer = 0;
+    }
+  }
+
   /**
-   * Kalau sebelumnya bergerak cepat, lalu tiba-tiba pelan → dust burst.
-   * Cooldown mencegah spam saat pemain zig-zag cepat.
+   * Buat hitbox di depan player.
+   * Posisi hitbox = player + (facing * ATTACK_RANGE).
    */
-  private checkStopEvent(dt: number, body: Phaser.Physics.Arcade.Body): void {
+  private spawnAttackHitbox(): void {
+    const hx = this.x + this.facingX * ATTACK_RANGE;
+    const hy = this.y + this.facingY * ATTACK_RANGE;
+
+    const damage = {
+      amount: ATTACK_DAMAGE,
+      element: 'physical' as const,
+      source: this,
+      sourceFaction: 'player' as const,
+      knockbackForce: ATTACK_KNOCKBACK,
+      hitstopMs: ATTACK_HITSTOP,
+      critical: false,
+    };
+
+    this.combat.spawnCircle({
+      x: hx,
+      y: hy,
+      radius: ATTACK_RADIUS,
+      damage,
+      lifespanMs: ATTACK_ACTIVE * 1000,
+      owner: this,
+      singleHitPerTarget: true,
+    });
+  }
+
+  // ============================================================
+  // STOP DUST
+  // ============================================================
+
+  private checkStopEvent(body: Phaser.Physics.Arcade.Body): void {
     const speed = body.speed;
 
     if (
@@ -207,12 +321,20 @@ export class Player extends Entity {
     }
 
     this.prevSpeed = speed;
-    void dt;
   }
+
+  // ============================================================
+  // VISUAL
+  // ============================================================
 
   private postUpdate(): void {
     this.shadow.setPosition(this.x, this.y + 10);
-    this.setRotation(Math.atan2(this.facingY, this.facingX));
+
+    // Rotasi hanya saat tidak menyerang — saat menyerang kita ingin
+    // sprite mengarah ke target dengan "pose" (nanti diganti animasi).
+    if (!this.isAttacking) {
+      this.setRotation(Math.atan2(this.facingY, this.facingX));
+    }
   }
 
   protected onDeath(): void {

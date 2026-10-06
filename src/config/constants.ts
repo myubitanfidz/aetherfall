@@ -17,15 +17,14 @@ export const DEPTHS = {
   ENTITY: 20,
   PROJECTILE: 30,
   FX: 40,
+  DAMAGE_NUMBER: 50,
   UI: 100,
 } as const;
 
 export const EVENTS = {
-  // Combat & gameplay
-  PLAYER_DAMAGED: 'player:damaged',
-  ENEMY_KILLED: 'enemy:killed',
-  LOOT_DROPPED: 'loot:dropped',
-  SCENE_CHANGED: 'scene:changed',
+  // Combat
+  ENTITY_DAMAGED: 'entity:damaged',
+  ENTITY_DIED: 'entity:died',
 
   // Player movement (dipakai EffectsSystem)
   PLAYER_DASH_STARTED: 'player:dash-started',
@@ -45,4 +44,18 @@ export const COLORS = {
   PANEL_BG: 0x1a1a2e,
   PANEL_BORDER: 0x252540,
   MUTED: 0x505068,
+
+  // Element colors (dipakai damage number nanti)
+  ELEM_PHYSICAL: 0xffffff,
+  ELEM_FIRE: 0xff7a3d,
+  ELEM_ICE: 0x7ad4ff,
+  ELEM_LIGHTNING: 0xffe45c,
 } as const;
+
+/** Warna damage number per elemen, dalam hex string untuk text. */
+export const ELEMENT_COLORS: Record<string, string> = {
+  physical: '#ffffff',
+  fire: '#ff7a3d',
+  ice: '#7ad4ff',
+  lightning: '#ffe45c',
+};
